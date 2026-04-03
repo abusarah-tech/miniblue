@@ -3,6 +3,7 @@ package auth
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -18,13 +19,31 @@ func NewHandler(s *store.Store) *Handler {
 }
 
 func (h *Handler) Register(r chi.Router) {
+	// OAuth2 token endpoints
 	r.Post("/auth/{tenantId}/oauth2/v2.0/token", h.Token)
 	r.Post("/auth/{tenantId}/oauth2/token", h.Token)
+
+	// OpenID Connect discovery
 	r.Get("/auth/{tenantId}/.well-known/openid-configuration", h.OpenIDConfig)
+	r.Get("/auth/{tenantId}/v2.0/.well-known/openid-configuration", h.OpenIDConfig)
 	r.Get("/auth/common/.well-known/openid-configuration", h.OpenIDConfig)
+
+	// Tenant discovery - az CLI calls this to resolve tenant IDs
+	r.Get("/{tenantId}/.well-known/openid-configuration", h.OpenIDConfig)
+	r.Get("/{tenantId}/v2.0/.well-known/openid-configuration", h.OpenIDConfig)
+
+	// Authorization endpoint (stub - returns a redirect with a fake code)
+	r.Get("/auth/{tenantId}/oauth2/v2.0/authorize", h.Authorize)
+	r.Get("/auth/{tenantId}/oauth2/authorize", h.Authorize)
+
+	// Tenant verification endpoint that az CLI uses
+	r.Get("/auth/{tenantId}", h.TenantInfo)
+	r.Get("/auth/common/discovery/instance", h.DiscoveryInstance)
+	r.Get("/common/discovery/instance", h.DiscoveryInstance)
 }
 
 func (h *Handler) Token(w http.ResponseWriter, r *http.Request) {
+	tenantId := chi.URLParam(r, "tenantId")
 	token := map[string]interface{}{
 		"access_token":  "local-azure-mock-access-token",
 		"token_type":    "Bearer",
@@ -33,9 +52,19 @@ func (h *Handler) Token(w http.ResponseWriter, r *http.Request) {
 		"not_before":    time.Now().Unix(),
 		"resource":      r.FormValue("resource"),
 		"refresh_token": "local-azure-mock-refresh-token",
+		"scope":         r.FormValue("scope"),
+		"ext_expires_in": 86400,
+		"foci":          "1",
+		"id_token":      "eyJ0eXAiOiJKV1QiLCJhbGciOiJub25lIn0.eyJhdWQiOiJsb2NhbC1henVyZSIsImlzcyI6Imh0dHBzOi8vc3RzLndpbmRvd3MubmV0LyIsInRpZCI6IiIsInN1YiI6ImxvY2FsLWF6dXJlLXVzZXIifQ.",
+		"client_info":   "eyJ1aWQiOiJsb2NhbC1henVyZS11c2VyIiwidXRpZCI6IiJ9",
+		"tenant_id":     tenantId,
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(token)
+}
+
+func (h *Handler) baseURL() string {
+	return "http://localhost:4566"
 }
 
 func (h *Handler) OpenIDConfig(w http.ResponseWriter, r *http.Request) {
@@ -43,14 +72,67 @@ func (h *Handler) OpenIDConfig(w http.ResponseWriter, r *http.Request) {
 	if tenantId == "" {
 		tenantId = "common"
 	}
+	base := h.baseURL()
 	config := map[string]interface{}{
-		"issuer":                   "https://sts.windows.net/" + tenantId + "/",
-		"authorization_endpoint":   "http://localhost:4566/auth/" + tenantId + "/oauth2/v2.0/authorize",
-		"token_endpoint":           "http://localhost:4566/auth/" + tenantId + "/oauth2/v2.0/token",
-		"jwks_uri":                 "http://localhost:4566/auth/" + tenantId + "/discovery/v2.0/keys",
-		"response_types_supported": []string{"code", "token"},
-		"grant_types_supported":    []string{"authorization_code", "client_credentials", "refresh_token"},
+		"issuer":                              "https://sts.windows.net/" + tenantId + "/",
+		"authorization_endpoint":              base + "/auth/" + tenantId + "/oauth2/v2.0/authorize",
+		"token_endpoint":                      base + "/auth/" + tenantId + "/oauth2/v2.0/token",
+		"device_authorization_endpoint":       base + "/auth/" + tenantId + "/oauth2/v2.0/devicecode",
+		"jwks_uri":                            base + "/auth/" + tenantId + "/discovery/v2.0/keys",
+		"userinfo_endpoint":                   base + "/auth/" + tenantId + "/openid/userinfo",
+		"tenant_region_scope":                 "NA",
+		"cloud_instance_name":                 "local-azure",
+		"cloud_graph_host_name":               "localhost",
+		"msgraph_host":                        "localhost",
+		"rbac_url":                            base,
+		"response_types_supported":            []string{"code", "id_token", "code id_token", "token id_token", "token"},
+		"subject_types_supported":             []string{"pairwise"},
+		"id_token_signing_alg_values_supported": []string{"RS256"},
+		"scopes_supported":                    []string{"openid", "profile", "email", "offline_access"},
+		"token_endpoint_auth_methods_supported": []string{"client_secret_post", "private_key_jwt", "client_secret_basic"},
+		"claims_supported":                    []string{"sub", "iss", "aud", "exp", "iat", "name", "email", "oid", "tid"},
+		"grant_types_supported":               []string{"authorization_code", "client_credentials", "refresh_token", "urn:ietf:params:oauth:grant-type:device_code"},
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(config)
+}
+
+func (h *Handler) Authorize(w http.ResponseWriter, r *http.Request) {
+	redirectURI := r.URL.Query().Get("redirect_uri")
+	state := r.URL.Query().Get("state")
+	if redirectURI != "" {
+		sep := "?"
+		if strings.Contains(redirectURI, "?") {
+			sep = "&"
+		}
+		http.Redirect(w, r, redirectURI+sep+"code=local-azure-mock-code&state="+state, http.StatusFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"code": "local-azure-mock-code"})
+}
+
+func (h *Handler) TenantInfo(w http.ResponseWriter, r *http.Request) {
+	tenantId := chi.URLParam(r, "tenantId")
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"tenantId":    tenantId,
+		"displayName": "local-azure-tenant",
+		"tenantType":  "AAD",
+	})
+}
+
+func (h *Handler) DiscoveryInstance(w http.ResponseWriter, r *http.Request) {
+	base := h.baseURL()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"tenant_discovery_endpoint": base + "/auth/common/.well-known/openid-configuration",
+		"metadata": []map[string]interface{}{
+			{
+				"preferred_network": "localhost",
+				"preferred_cache":   "localhost",
+				"aliases":           []string{"localhost", "localhost:4566"},
+			},
+		},
+	})
 }
