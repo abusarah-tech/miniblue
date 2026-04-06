@@ -70,19 +70,20 @@ func TestFileBackend_AutoSave(t *testing.T) {
 
 	fb := NewFileBackend(path)
 	stop := fb.StartAutoSave(50 * time.Millisecond)
-	defer stop()
 
 	fb.Set("auto", "saved")
 
 	// Wait for at least one auto-save tick
 	time.Sleep(150 * time.Millisecond)
 
+	// Stop and let any in-flight save complete
+	stop()
+	time.Sleep(20 * time.Millisecond)
+
 	// File must exist now
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		t.Fatal("auto-save did not create state file")
 	}
-
-	stop()
 
 	// Reload and verify
 	fb2 := NewFileBackend(path)
