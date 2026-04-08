@@ -1,0 +1,97 @@
+name: E2E Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      miniblue:
+        image: moabukar/miniblue:latest
+        ports:
+          - 4566:4566
+          - 4567:4567
+        options: --health-cmd="/healthcheck" --health-interval=5s --health-retries=5
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Wait for miniblue
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:4566/health && break
+            sleep 1
+          done
+
+      - name: Health check
+        run: |
+          curl -sf http://localhost:4566/health | python3 -c "
+          import json,sys
+          d = json.load(sys.stdin)
+          assert d['status'] == 'running', f'Expected running, got {d[\"status\"]}'
+          print(f'OK: {d[\"service_count\"]} services, v{d[\"version\"]}')
+          "
+
+      - name: Resource Groups
+        run: |
+          curl -sf -X PUT "http://localhost:4566/subscriptions/s1/resourcegroups/test-rg" \
+            -H "Content-Type: application/json" -d '{"location":"eastus"}'
+          curl -sf http://localhost:4566/subscriptions/s1/resourcegroups/test-rg | python3 -c "
+          import json,sys; assert json.load(sys.stdin)['name'] == 'test-rg'; print('OK: RG created')
+          "
+
+      - name: Key Vault
+        run: |
+          curl -sf -X PUT "http://localhost:4566/keyvault/v1/secrets/s1" \
+            -H "Content-Type: application/json" -d '{"value":"secret"}'
+          curl -sf http://localhost:4566/keyvault/v1/secrets/s1 | python3 -c "
+          import json,sys; assert json.load(sys.stdin)['value'] == 'secret'; print('OK: KV secret')
+          "
+
+      - name: Blob Storage
+        run: |
+          curl -sf -X PUT "http://localhost:4566/blob/a1/c1"
+          curl -sf -X PUT "http://localhost:4566/blob/a1/c1/test.txt" -d "hello"
+          BODY=$(curl -sf http://localhost:4566/blob/a1/c1/test.txt)
+          [ "$BODY" = "hello" ] && echo "OK: Blob roundtrip" || exit 1
+
+      - name: Cosmos DB
+        run: |
+          curl -sf -X POST "http://localhost:4566/cosmosdb/a1/dbs/d1/colls/c1/docs" \
+            -H "Content-Type: application/json" -d '{"id":"1","name":"test"}'
+          curl -sf http://localhost:4566/cosmosdb/a1/dbs/d1/colls/c1/docs/1 | python3 -c "
+          import json,sys; assert json.load(sys.stdin)['name'] == 'test'; print('OK: Cosmos doc')
+          "
+
+      - name: Service Bus
+        run: |
+          curl -sf -X PUT "http://localhost:4566/servicebus/ns/queues/q1"
+          curl -sf -X POST "http://localhost:4566/servicebus/ns/queues/q1/messages" \
+            -H "Content-Type: application/json" -d '{"body":"msg1"}'
+          curl -sf http://localhost:4566/servicebus/ns/queues/q1/messages/head | python3 -c "
+          import json,sys; assert json.load(sys.stdin)['body'] == 'msg1'; print('OK: SB message')
+          "
+
+      - name: Reset
+        run: |
+          curl -sf -X POST http://localhost:4566/_miniblue/reset
+          curl -sf http://localhost:4566/subscriptions/s1/resourcegroups | python3 -c "
+          import json,sys; assert len(json.load(sys.stdin)['value']) == 0; print('OK: Reset cleared all')
+          "
+
+      - name: Database services
+        run: |
+          curl -sf -X PUT "http://localhost:4566/subscriptions/s1/resourcegroups/rg1" \
+            -H "Content-Type: application/json" -d '{"location":"eastus"}'
+          curl -sf -X PUT "http://localhost:4566/subscriptions/s1/resourceGroups/rg1/providers/Microsoft.DBforPostgreSQL/flexibleServers/pg1" \
+            -H "Content-Type: application/json" -d '{"location":"eastus"}'
+          curl -sf -X PUT "http://localhost:4566/subscriptions/s1/resourceGroups/rg1/providers/Microsoft.Cache/redis/r1" \
+            -H "Content-Type: application/json" -d '{"location":"eastus","properties":{"sku":{"name":"Basic","family":"C","capacity":1}}}'
+          echo "OK: DB services created"
+
+      - name: Cascade delete
+        run: |
+          curl -sf -X DELETE "http://localhost:4566/subscriptions/s1/resourcegroups/rg1"
+          CODE=$(curl -sf -o /dev/null -w '%{http_code}' "http://localhost:4566/subscriptions/s1/resourceGroups/rg1/providers/Microsoft.Cache/redis/r1")
+          [ "$CODE" = "404" ] && echo "OK: Cascade delete works" || exit 1
