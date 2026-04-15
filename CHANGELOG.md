@@ -4,6 +4,21 @@ All notable changes to miniblue are documented here.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/). Versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.4.1] - 2026-04-15
+
+### Fixed
+- Resource tags now preserved and returned on all ARM services (VNets, NSGs, Public IPs, Load Balancers, App Gateways, DNS Zones, Storage Accounts). Fixes constant Terraform drift
+- Resource group cascade delete now cleans up all 26 child resource types (was missing NSGs, Public IPs, Load Balancers, App Gateways, Storage Accounts, Cosmos DB, Service Bus, App Config)
+- Subscription-level list endpoints added for VNets, NSGs, Public IPs, Load Balancers, App Gateways and DNS Zones. Fixes Terraform data source 404s
+- Renamed `_arm_test.go` files that were silently skipped on amd64/arm64 (34 tests now run)
+- Added 3 missing providers to registration list (PostgreSQL, Redis, Container Instances)
+- Added 10 missing service documentation pages to website
+
+### Changed
+- PR template updated with all 26 services
+- Added @abusarah-tech to CODEOWNERS
+- Added public ROADMAP.md
+
 ## [0.3.0] - 2026-04-14
 
 ### Added
@@ -72,6 +87,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). Versions follow 
 - ARM API versioning middleware
 - Azure-compatible error responses
 
+[0.4.1]: https://github.com/moabukar/miniblue/compare/v0.4.0...v0.4.1
 [0.3.0]: https://github.com/moabukar/miniblue/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/moabukar/miniblue/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/moabukar/miniblue/releases/tag/v0.1.0
